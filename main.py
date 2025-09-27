@@ -1,160 +1,141 @@
+# main.py
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from typing import List, Dict, Optional
+from typing import List, Optional
+from sqlalchemy.orm import Session
+from sqlalchemy import desc
 import uuid
-import heapq
+
+import models
+import schemas
+from database import SessionLocal, engine
+
+# This line creates the tables in your database based on your models
+# --- CHANGE: This will now also create the new 'upvotes' table ---
+models.Base.metadata.create_all(bind=engine)
 
 app = FastAPI(
     title="Full-Stack Civic Sense Complaint System",
-    description="A system to manage, vote on, and process civic complaints using various DSA concepts."
+    description="A system to manage, vote on, and process civic complaints with a persistent database."
 )
 
 # --- CORS Middleware ---
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"], # Allows all origins
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["*"], # Allows all methods
+    allow_headers=["*"], # Allows all headers
 )
 
-# --- Data Models (using Pydantic) ---
-
-class User(BaseModel):
-    id: str = ""
-    username: str
-    password: str # In a real app, this should be a hash
-
-class Complaint(BaseModel):
-    id: str = ""
-    description: str
-    category: str
-    location: str
-    upvotes: int = 0
-    owner_id: str
-    status: str = "Pending"
-    
-class LoginRequest(BaseModel):
-    username: str
-    password: str
-
-# --- In-Memory Data Storage (Simulating a Database) ---
-
-# DSA Topic 1: Hashing
-# Dictionaries (hash maps) are used for O(1) average time complexity for lookups,
-# insertions, and deletions of users and complaints by their IDs.
-users_db: Dict[str, User] = {}
-complaints_db: Dict[str, Complaint] = {}
-
-# DSA Topic 2: Priority Queue (Max-Heap)
-# A priority queue is used to keep track of the most urgent complaints.
-# We prioritize based on the number of upvotes. Since Python's heapq is a min-heap,
-# we store the negative of the upvote count to simulate max-heap behavior.
-complaints_pq = []
-
-# DSA Topic 3: Graph (Adjacency List)
-# The graph of related categories remains to show structured relationships.
-category_graph = {
-    "Waste Management": ["Public Health", "Sanitation"],
-    "Roads & Traffic": ["Public Safety", "Infrastructure"],
-    "Public Health": ["Waste Management", "Water Supply"],
-    "Sanitation": ["Waste Management", "Public Health"],
-    "Water Supply": ["Public Health", "Infrastructure"],
-    "Public Safety": ["Roads & Traffic"],
-    "Infrastructure": ["Roads & Traffic", "Water Supply"],
-    "Noise Pollution": []
-}
-
+# --- Dependency for getting a DB session ---
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
 
 # --- API Endpoints ---
 
 # --- User Authentication Endpoints ---
-
-@app.post("/register", response_model=User, status_code=201)
-def register_user(user: User):
-    """Registers a new user."""
-    if any(u.username == user.username for u in users_db.values()):
+@app.post("/register", response_model=schemas.User, status_code=201)
+def register_user(user: schemas.UserCreate, db: Session = Depends(get_db)):
+    db_user = db.query(models.User).filter(models.User.username == user.username).first()
+    if db_user:
         raise HTTPException(status_code=400, detail="Username already exists")
-    user.id = str(uuid.uuid4())
-    users_db[user.id] = user
+    
+    # In a real app, hash the password here!
+    new_user = models.User(username=user.username, password=user.password)
+    db.add(new_user)
+    db.commit()
+    db.refresh(new_user)
+    return new_user
+
+@app.post("/login", response_model=schemas.User)
+def login_user(login_request: schemas.LoginRequest, db: Session = Depends(get_db)):
+    user = db.query(models.User).filter(models.User.username == login_request.username).first()
+    if not user or user.password != login_request.password:
+        raise HTTPException(status_code=401, detail="Invalid username or password")
     return user
 
-@app.post("/login", response_model=User)
-def login_user(login_request: LoginRequest):
-    """Logs in a user."""
-    for user in users_db.values():
-        if user.username == login_request.username and user.password == login_request.password:
-            return user
-    raise HTTPException(status_code=401, detail="Invalid username or password")
-
-
 # --- Complaint Management Endpoints ---
-
-@app.post("/complaint", response_model=Complaint, status_code=201)
-def submit_complaint(complaint: Complaint):
-    """Submits a new complaint linked to a user."""
-    if complaint.owner_id not in users_db:
+@app.post("/complaint", response_model=schemas.Complaint, status_code=201)
+def submit_complaint(complaint: schemas.ComplaintCreate, db: Session = Depends(get_db)):
+    owner = db.query(models.User).filter(models.User.id == complaint.owner_id).first()
+    if not owner:
         raise HTTPException(status_code=404, detail="Owner user not found")
-    complaint.id = str(uuid.uuid4())
-    complaints_db[complaint.id] = complaint
-    # Add to priority queue
-    heapq.heappush(complaints_pq, (-complaint.upvotes, complaint.id))
-    return complaint
-
-@app.get("/complaints", response_model=List[Complaint])
-def get_all_complaints():
-    """
-    Retrieves all complaints, sorted by upvotes in descending order.
-    DSA Topic 4: Sorting Algorithm
-    Python's built-in sort (Timsort) is used here for an efficient O(n log n)
-    sorting operation to present the most popular complaints first.
-    """
-    sorted_complaints = sorted(complaints_db.values(), key=lambda c: c.upvotes, reverse=True)
-    return sorted_complaints
-
-@app.post("/complaint/{complaint_id}/upvote", response_model=Complaint)
-def upvote_complaint(complaint_id: str):
-    """Increments the upvote count for a complaint."""
-    if complaint_id not in complaints_db:
-        raise HTTPException(status_code=404, detail="Complaint not found")
     
-    complaint = complaints_db[complaint_id]
+    new_complaint = models.Complaint(**complaint.model_dump())
+    db.add(new_complaint)
+    db.commit()
+    db.refresh(new_complaint)
+    return new_complaint
+
+@app.get("/complaints", response_model=List[schemas.Complaint])
+def get_all_complaints(db: Session = Depends(get_db)):
+    # Order by most upvotes first
+    complaints = db.query(models.Complaint).order_by(desc(models.Complaint.upvotes)).all()
+    return complaints
+
+# --- CHANGE: Rewritten upvote logic for one vote per user & status check ---
+@app.post("/complaint/{complaint_id}/upvote", response_model=schemas.Complaint)
+def upvote_complaint(complaint_id: uuid.UUID, vote_request: schemas.UpvoteRequest, db: Session = Depends(get_db)):
+    complaint = db.query(models.Complaint).filter(models.Complaint.id == complaint_id).first()
+    if not complaint:
+        raise HTTPException(status_code=404, detail="Complaint not found")
+
+    # 1. Check if the complaint is already resolved
+    if complaint.status != "Pending":
+        raise HTTPException(status_code=400, detail="Cannot vote on a resolved complaint")
+
+    # 2. Check if the user has already voted for this complaint
+    existing_vote = db.query(models.Upvote).filter(
+        models.Upvote.complaint_id == complaint_id,
+        models.Upvote.user_id == vote_request.user_id
+    ).first()
+
+    if existing_vote:
+        raise HTTPException(status_code=400, detail="You have already voted for this complaint")
+    
+    # 3. If checks pass, record the vote and increment the count
+    new_vote = models.Upvote(user_id=vote_request.user_id, complaint_id=complaint_id)
+    db.add(new_vote)
     complaint.upvotes += 1
-    
-    # Re-prioritize in the priority queue. A simple way is to remove and re-add.
-    # A more efficient way would be to update in-place, but that's more complex.
-    global complaints_pq
-    # Create a new list excluding the old entry
-    complaints_pq = [item for item in complaints_pq if item[1] != complaint_id]
-    heapq.heapify(complaints_pq) # Turn the list back into a heap
-    heapq.heappush(complaints_pq, (-complaint.upvotes, complaint.id)) # Add the updated item
-    
+    db.commit()
+    db.refresh(complaint)
     return complaint
 
-@app.get("/complaints/most_voted", response_model=Optional[Complaint])
-def get_most_voted_complaint():
-    """Retrieves the complaint with the most upvotes from the priority queue."""
-    while complaints_pq:
-        upvotes, complaint_id = complaints_pq[0] # Peek at the top
-        if complaint_id in complaints_db and complaints_db[complaint_id].status == "Pending":
-            return complaints_db[complaint_id]
-        else:
-            heapq.heappop(complaints_pq) # Remove if resolved or deleted
-    return None
+@app.get("/complaints/most_voted", response_model=Optional[schemas.Complaint])
+def get_most_voted_complaint(db: Session = Depends(get_db)):
+    most_voted = db.query(models.Complaint).filter(models.Complaint.status == "Pending").order_by(desc(models.Complaint.upvotes)).first()
+    return most_voted
 
-@app.put("/complaint/{complaint_id}/status", response_model=Complaint)
-def update_complaint_status(complaint_id: str, status: str):
-    """Updates the status of a complaint."""
-    if complaint_id not in complaints_db:
+# --- Admin Endpoint ---
+@app.put("/admin/complaint/{complaint_id}/status", response_model=schemas.Complaint)
+def update_complaint_status_by_admin(
+    complaint_id: uuid.UUID,
+    admin_id: uuid.UUID,  # In a real app, this would come from a secure auth token
+    status: str,
+    db: Session = Depends(get_db)
+):
+    """
+    Allows an admin to update the status of any complaint.
+    Example statuses: "Resolved", "In Progress", "Rejected".
+    """
+    # 1. Verify the user is an admin
+    admin_user = db.query(models.User).filter(models.User.id == admin_id).first()
+    if not admin_user or not admin_user.is_admin:
+        raise HTTPException(status_code=403, detail="Forbidden: Requires admin privileges")
+
+    # 2. Find the complaint
+    complaint = db.query(models.Complaint).filter(models.Complaint.id == complaint_id).first()
+    if not complaint:
         raise HTTPException(status_code=404, detail="Complaint not found")
-    complaints_db[complaint_id].status = status
-    return complaints_db[complaint_id]
-
-# --- Other Endpoints ---
-@app.get("/complaints/category_graph", response_model=Dict[str, List[str]])
-def get_category_graph():
-    """Returns the graph of complaint categories."""
-    return category_graph
-
-# To run: uvicorn main:app --reload
+        
+    # 3. Update the status and save
+    complaint.status = status
+    db.commit()
+    db.refresh(complaint)
+    
+    return complaint
