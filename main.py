@@ -11,7 +11,6 @@ import schemas
 from database import SessionLocal, engine
 
 # This line creates the tables in your database based on your models
-# --- CHANGE: This will now also create the new 'upvotes' table ---
 models.Base.metadata.create_all(bind=engine)
 
 app = FastAPI(
@@ -22,11 +21,17 @@ app = FastAPI(
 # --- CORS Middleware ---
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # Allows all origins
+    allow_origins=["*"],
     allow_credentials=True,
-    allow_methods=["*"], # Allows all methods
-    allow_headers=["*"], # Allows all headers
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
+
+# --- DSA Topic: Stack Implementation ---
+# In-memory dictionary to hold a stack of actions for each admin.
+# Format: { admin_id: [ { "complaint_id": ..., "previous_status": ... }, ... ] }
+admin_action_stacks = {}
+
 
 # --- Dependency for getting a DB session ---
 def get_db():
@@ -45,7 +50,6 @@ def register_user(user: schemas.UserCreate, db: Session = Depends(get_db)):
     if db_user:
         raise HTTPException(status_code=400, detail="Username already exists")
     
-    # In a real app, hash the password here!
     new_user = models.User(username=user.username, password=user.password)
     db.add(new_user)
     db.commit()
@@ -74,22 +78,18 @@ def submit_complaint(complaint: schemas.ComplaintCreate, db: Session = Depends(g
 
 @app.get("/complaints", response_model=List[schemas.Complaint])
 def get_all_complaints(db: Session = Depends(get_db)):
-    # Order by most upvotes first
     complaints = db.query(models.Complaint).order_by(desc(models.Complaint.upvotes)).all()
     return complaints
 
-# --- CHANGE: Rewritten upvote logic for one vote per user & status check ---
 @app.post("/complaint/{complaint_id}/upvote", response_model=schemas.Complaint)
 def upvote_complaint(complaint_id: uuid.UUID, vote_request: schemas.UpvoteRequest, db: Session = Depends(get_db)):
     complaint = db.query(models.Complaint).filter(models.Complaint.id == complaint_id).first()
     if not complaint:
         raise HTTPException(status_code=404, detail="Complaint not found")
 
-    # 1. Check if the complaint is already resolved
     if complaint.status != "Pending":
         raise HTTPException(status_code=400, detail="Cannot vote on a resolved complaint")
 
-    # 2. Check if the user has already voted for this complaint
     existing_vote = db.query(models.Upvote).filter(
         models.Upvote.complaint_id == complaint_id,
         models.Upvote.user_id == vote_request.user_id
@@ -98,7 +98,6 @@ def upvote_complaint(complaint_id: uuid.UUID, vote_request: schemas.UpvoteReques
     if existing_vote:
         raise HTTPException(status_code=400, detail="You have already voted for this complaint")
     
-    # 3. If checks pass, record the vote and increment the count
     new_vote = models.Upvote(user_id=vote_request.user_id, complaint_id=complaint_id)
     db.add(new_vote)
     complaint.upvotes += 1
@@ -111,31 +110,65 @@ def get_most_voted_complaint(db: Session = Depends(get_db)):
     most_voted = db.query(models.Complaint).filter(models.Complaint.status == "Pending").order_by(desc(models.Complaint.upvotes)).first()
     return most_voted
 
-# --- Admin Endpoint ---
-@app.put("/admin/complaint/{complaint_id}/status", response_model=schemas.Complaint)
+# --- Admin Endpoints ---
+
+# MODIFIED: Endpoint now supports the undo stack
+@app.put("/admin/complaint/{complaint_id}/status", response_model=schemas.AdminActionResponse)
 def update_complaint_status_by_admin(
     complaint_id: uuid.UUID,
-    admin_id: uuid.UUID,  # In a real app, this would come from a secure auth token
+    admin_id: uuid.UUID,
     status: str,
     db: Session = Depends(get_db)
 ):
-    """
-    Allows an admin to update the status of any complaint.
-    Example statuses: "Resolved", "In Progress", "Rejected".
-    """
-    # 1. Verify the user is an admin
     admin_user = db.query(models.User).filter(models.User.id == admin_id).first()
     if not admin_user or not admin_user.is_admin:
         raise HTTPException(status_code=403, detail="Forbidden: Requires admin privileges")
 
-    # 2. Find the complaint
     complaint = db.query(models.Complaint).filter(models.Complaint.id == complaint_id).first()
     if not complaint:
         raise HTTPException(status_code=404, detail="Complaint not found")
         
-    # 3. Update the status and save
+    # --- STACK PUSH LOGIC ---
+    old_status = complaint.status
+    if old_status != status:
+        if admin_id not in admin_action_stacks:
+            admin_action_stacks[admin_id] = []
+        action_to_undo = {"complaint_id": complaint_id, "previous_status": old_status}
+        admin_action_stacks[admin_id].append(action_to_undo)
+
     complaint.status = status
     db.commit()
     db.refresh(complaint)
     
-    return complaint
+    actions_to_undo = len(admin_action_stacks.get(admin_id, []))
+    
+    return {"updated_complaint": complaint, "actions_to_undo": actions_to_undo}
+
+# NEW: Endpoint to handle the undo action
+@app.post("/admin/undo", response_model=schemas.AdminActionResponse)
+def undo_last_admin_action(request: schemas.UndoRequest, db: Session = Depends(get_db)):
+    admin_id = request.admin_id
+    admin_user = db.query(models.User).filter(models.User.id == admin_id).first()
+    if not admin_user or not admin_user.is_admin:
+        raise HTTPException(status_code=403, detail="Forbidden: Requires admin privileges")
+
+    # --- STACK POP LOGIC ---
+    admin_stack = admin_action_stacks.get(admin_id)
+    if not admin_stack:
+        raise HTTPException(status_code=404, detail="No actions to undo")
+
+    last_action = admin_stack.pop()
+    complaint_id = last_action["complaint_id"]
+    previous_status = last_action["previous_status"]
+    
+    complaint = db.query(models.Complaint).filter(models.Complaint.id == complaint_id).first()
+    if not complaint:
+        raise HTTPException(status_code=404, detail="Original complaint not found, action removed from undo stack.")
+
+    complaint.status = previous_status
+    db.commit()
+    db.refresh(complaint)
+    
+    actions_to_undo = len(admin_stack)
+    
+    return {"updated_complaint": complaint, "actions_to_undo": actions_to_undo}

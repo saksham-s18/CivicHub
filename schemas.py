@@ -40,6 +40,14 @@ class LoginRequest(BaseModel):
     username: str
     password: str
 
-# --- CHANGE: New schema for the upvote request body ---
 class UpvoteRequest(BaseModel):
     user_id: uuid.UUID
+
+# --- NEW: Schemas for Admin Actions with Undo ---
+
+class UndoRequest(BaseModel):
+    admin_id: uuid.UUID
+
+class AdminActionResponse(BaseModel):
+    updated_complaint: Complaint
+    actions_to_undo: int

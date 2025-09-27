@@ -1,5 +1,17 @@
+// script.js
 const API_URL = 'http://127.0.0.1:8000';
 let currentUser = null;
+
+// --- Helper function to manage Undo button visibility ---
+function updateUndoButtonVisibility(actions_to_undo) {
+    const undoBtn = document.getElementById('undo-btn');
+    if (currentUser && currentUser.is_admin && actions_to_undo > 0) {
+        undoBtn.classList.remove('hidden');
+        undoBtn.textContent = `Undo (${actions_to_undo})`;
+    } else {
+        undoBtn.classList.add('hidden');
+    }
+}
 
 // --- SPA Navigation ---
 function showPage(pageId) {
@@ -37,6 +49,7 @@ function updateUIforAuthState() {
     } else {
         document.getElementById('auth-links').classList.remove('hidden');
         document.getElementById('user-info').classList.add('hidden');
+        updateUndoButtonVisibility(0); // Hide undo button on logout
         renderLoginPrompt();
     }
 }
@@ -72,10 +85,11 @@ async function fetchAllData() {
     fetchMostVoted();
 }
 
-// --- CHANGE: Renders complaints into separate "Pending" and "Resolved" lists ---
+// MODIFIED: Function now splits complaints into 'Pending' and 'Resolved'
 async function fetchComplaints() {
     const response = await fetch(`${API_URL}/complaints`);
     const complaints = await response.json();
+
     const pendingList = document.getElementById('pending-complaints-list');
     const resolvedList = document.getElementById('resolved-complaints-list');
     pendingList.innerHTML = '';
@@ -85,52 +99,53 @@ async function fetchComplaints() {
     const resolvedComplaints = complaints.filter(c => c.status !== 'Pending');
 
     if (pendingComplaints.length === 0) {
-        pendingList.innerHTML = '<p class="text-gray-500">No pending complaints. Great job, everyone!</p>';
+        pendingList.innerHTML = '<p class="text-gray-500">No pending issues. Great job, community!</p>';
     } else {
-        pendingComplaints.forEach(c => renderComplaintCard(c, pendingList));
+        pendingComplaints.forEach(c => pendingList.appendChild(createComplaintCard(c)));
     }
-    
+
     if (resolvedComplaints.length === 0) {
         resolvedList.innerHTML = '<p class="text-gray-500">No issues have been resolved yet.</p>';
     } else {
-        resolvedComplaints.forEach(c => renderComplaintCard(c, resolvedList));
+        resolvedComplaints.forEach(c => resolvedList.appendChild(createComplaintCard(c)));
     }
     
     lucide.createIcons(); // Re-render icons
 }
 
-// --- CHANGE: Extracted card rendering into its own function for reuse ---
-function renderComplaintCard(c, targetList) {
+// NEW: Helper function to create a complaint card to avoid code duplication
+function createComplaintCard(complaint) {
     const card = document.createElement('div');
-    card.className = 'p-4 border rounded-lg bg-white flex justify-between items-center';
+    const isResolved = complaint.status !== 'Pending';
+
+    card.className = `p-4 border rounded-lg flex justify-between items-center ${isResolved ? 'bg-gray-100 opacity-70' : 'bg-white'}`;
     
-    const adminControls = (currentUser && currentUser.is_admin && c.status === 'Pending') 
+    const adminControls = (currentUser && currentUser.is_admin && !isResolved) 
         ? `<div class="mt-2">
-             <button onclick="handleResolve('${c.id}')" class="px-2 py-1 text-xs bg-green-500 text-white rounded hover:bg-green-600">Mark Resolved</button>
+             <button onclick="handleResolve('${complaint.id}')" class="px-2 py-1 text-xs bg-green-500 text-white rounded hover:bg-green-600">Mark Resolved</button>
            </div>` 
         : '';
-    
-    // --- CHANGE: Logic to disable upvote button if not logged in or if complaint is resolved ---
-    const isUpvoteDisabled = !currentUser || c.status !== 'Pending';
-    const statusColor = c.status === 'Resolved' ? 'bg-green-100 text-green-800' : 'bg-yellow-100 text-yellow-800';
+
+    const statusColor = isResolved ? 'bg-green-100 text-green-800' : 'bg-yellow-100 text-yellow-800';
 
     card.innerHTML = `
         <div>
-            <p class="font-semibold">${c.category}</p>
-            <p class="text-sm text-gray-600">${c.description}</p>
-            <p class="text-xs text-gray-500 mt-1">@ ${c.location}</p>
-            <span class="inline-block mt-2 px-2 py-1 text-xs font-medium rounded-full ${statusColor}">${c.status}</span>
+            <p class="font-semibold">${complaint.category}</p>
+            <p class="text-sm text-gray-600">${complaint.description}</p>
+            <p class="text-xs text-gray-500 mt-1">@ ${complaint.location}</p>
+            <span class="inline-block mt-2 px-2 py-1 text-xs rounded-full ${statusColor}">${complaint.status}</span>
             ${adminControls}
         </div>
         <div class="text-center">
-            <button onclick="handleUpvote('${c.id}')" ${isUpvoteDisabled ? 'disabled' : ''} class="flex items-center space-x-2 bg-gray-200 px-4 py-2 rounded-full hover:bg-indigo-200 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:opacity-70">
+            <button onclick="handleUpvote('${complaint.id}')" ${!currentUser || isResolved ? 'disabled' : ''} class="flex items-center space-x-2 bg-gray-200 px-4 py-2 rounded-full hover:bg-indigo-200 disabled:cursor-not-allowed disabled:opacity-50">
                 <i data-lucide="arrow-up" class="w-5 h-5"></i>
-                <span class="font-bold text-lg">${c.upvotes}</span>
+                <span class="font-bold text-lg">${complaint.upvotes}</span>
             </button>
         </div>
     `;
-    targetList.appendChild(card);
+    return card;
 }
+
 
 async function fetchMostVoted() {
     const response = await fetch(`${API_URL}/complaints/most_voted`);
@@ -143,32 +158,60 @@ async function fetchMostVoted() {
     }
 }
 
-// --- CHANGE: Now sends user_id in the request body ---
+// MODIFIED: Upvote now sends the user ID in the request body
 async function handleUpvote(id) {
     if (!currentUser) return;
-    try {
-        const response = await fetch(`${API_URL}/complaint/${id}/upvote`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ user_id: currentUser.id })
-        });
-        if (!response.ok) {
-            const error = await response.json();
-            alert(`Could not upvote: ${error.detail}`); // Inform user of failure
-        }
-    } catch (e) {
-        console.error("Upvote failed", e);
-    } finally {
-        fetchAllData(); // Always refresh data
+    
+    const response = await fetch(`${API_URL}/complaint/${id}/upvote`, { 
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user_id: currentUser.id })
+    });
+
+    if (!response.ok) {
+        const error = await response.json();
+        alert(`Vote failed: ${error.detail}`);
     }
+
+    fetchAllData();
 }
 
+// MODIFIED: handleResolve now processes the new API response
 async function handleResolve(complaintId) {
     if (!currentUser || !currentUser.is_admin) return;
     const url = `${API_URL}/admin/complaint/${complaintId}/status?admin_id=${currentUser.id}&status=Resolved`;
-    await fetch(url, { method: 'PUT' });
-    fetchAllData();
+    const response = await fetch(url, { method: 'PUT' });
+
+    if(response.ok) {
+        const data = await response.json();
+        updateUndoButtonVisibility(data.actions_to_undo);
+        fetchAllData();
+    }
 }
+
+// NEW: Function to handle the undo button click
+async function handleUndo() {
+    if (!currentUser || !currentUser.is_admin) return;
+    
+    const response = await fetch(`${API_URL}/admin/undo`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ admin_id: currentUser.id })
+    });
+
+    if (response.ok) {
+        const data = await response.json();
+        updateUndoButtonVisibility(data.actions_to_undo);
+        fetchAllData();
+    } else {
+        const error = await response.json();
+        alert(`Undo failed: ${error.detail}`);
+        if (response.status === 404) {
+            updateUndoButtonVisibility(0);
+        }
+    }
+}
+
 
 async function handleComplaintSubmit(e) {
     e.preventDefault();
@@ -216,7 +259,7 @@ document.getElementById('login-form').addEventListener('submit', async (e) => {
         currentUser = user;
         localStorage.setItem('currentUser', JSON.stringify(user));
         updateUIforAuthState();
-        fetchAllData(); // Fetch data after logging in
+        fetchAllData();
         showPage('home');
     } catch(error) {
         messageDiv.textContent = error.message;
@@ -253,7 +296,7 @@ function handleLogout() {
     currentUser = null;
     localStorage.removeItem('currentUser');
     updateUIforAuthState();
-    fetchAllData(); // Refresh data to remove admin controls
+    fetchAllData(); 
 }
 
 // --- Initial Load ---
