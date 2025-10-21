@@ -66,7 +66,13 @@
                 </div>
                 <div class="lg:col-span-2 space-y-8">
                     <div class="card p-6">
-                        <h2 class="text-2xl font-semibold mb-4 border-b pb-2">Pending Issues</h2>
+                        <div class="flex justify-between items-center mb-4 border-b pb-2">
+                            <h2 class="text-2xl font-semibold">Pending Issues</h2>
+                            <div class="relative">
+                                <input type="text" id="pending-search-input" placeholder="Search by location..." class="rounded-md border-gray-300 shadow-sm p-2 pl-8 text-sm">
+                                <i data-lucide="search" class="w-4 h-4 absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400"></i>
+                            </div>
+                        </div>
                         <div id="pending-complaints-list" class="space-y-4"></div>
                     </div>
                     <div class="card p-6 bg-gray-50">

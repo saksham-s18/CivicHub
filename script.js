@@ -2,6 +2,72 @@
 const API_URL = 'http://127.0.0.1:8000';
 let currentUser = null;
 
+// --- Trie (Prefix Tree) Implementation for Search ---
+
+class TrieNode {
+    constructor() {
+        this.children = {};
+        this.isEndOfWord = false;
+        this.locations = new Set(); 
+    }
+}
+
+class Trie {
+    constructor() {
+        this.root = new TrieNode();
+    }
+
+    insert(location) {
+        let node = this.root;
+        const normalizedLocation = location.toLowerCase();
+        for (const char of normalizedLocation) {
+            if (!node.children[char]) {
+                node.children[char] = new TrieNode();
+            }
+            node = node.children[char];
+        }
+        node.isEndOfWord = true;
+        node.locations.add(location);
+    }
+
+    _findNode(prefix) {
+        let node = this.root;
+        for (const char of prefix.toLowerCase()) {
+            if (!node.children[char]) {
+                return null;
+            }
+            node = node.children[char];
+        }
+        return node;
+    }
+
+    findAllWithPrefix(prefix) {
+        const startNode = this._findNode(prefix);
+        if (!startNode) {
+            return [];
+        }
+
+        const results = new Set();
+        const stack = [startNode];
+
+        while (stack.length > 0) {
+            const node = stack.pop();
+            if (node.isEndOfWord) {
+                node.locations.forEach(loc => results.add(loc));
+            }
+            for (const char in node.children) {
+                stack.push(node.children[char]);
+            }
+        }
+        return Array.from(results);
+    }
+}
+
+// MODIFIED: Only one Trie and list are needed now, for pending complaints
+let pendingComplaintsTrie = new Trie();
+let allPendingComplaints = [];
+
+
 // --- Helper function to manage Undo button visibility ---
 function updateUndoButtonVisibility(actions_to_undo) {
     const undoBtn = document.getElementById('undo-btn');
@@ -49,7 +115,7 @@ function updateUIforAuthState() {
     } else {
         document.getElementById('auth-links').classList.remove('hidden');
         document.getElementById('user-info').classList.add('hidden');
-        updateUndoButtonVisibility(0); // Hide undo button on logout
+        updateUndoButtonVisibility(0);
         renderLoginPrompt();
     }
 }
@@ -85,35 +151,58 @@ async function fetchAllData() {
     fetchMostVoted();
 }
 
-// MODIFIED: Function now splits complaints into 'Pending' and 'Resolved'
+// MODIFIED: Simplified to only handle pending search and direct rendering of resolved issues
 async function fetchComplaints() {
     const response = await fetch(`${API_URL}/complaints`);
     const complaints = await response.json();
 
-    const pendingList = document.getElementById('pending-complaints-list');
-    const resolvedList = document.getElementById('resolved-complaints-list');
-    pendingList.innerHTML = '';
-    resolvedList.innerHTML = '';
-
-    const pendingComplaints = complaints.filter(c => c.status === 'Pending');
+    allPendingComplaints = complaints.filter(c => c.status === 'Pending');
     const resolvedComplaints = complaints.filter(c => c.status !== 'Pending');
 
-    if (pendingComplaints.length === 0) {
-        pendingList.innerHTML = '<p class="text-gray-500">No pending issues. Great job, community!</p>';
-    } else {
-        pendingComplaints.forEach(c => pendingList.appendChild(createComplaintCard(c)));
-    }
+    // --- Trie Population for Pending ---
+    pendingComplaintsTrie = new Trie();
+    allPendingComplaints.forEach(c => {
+        if (c.location) {
+            pendingComplaintsTrie.insert(c.location);
+        }
+    });
 
+    // Reset search input on full refresh
+    document.getElementById('pending-search-input').value = '';
+    
+    // Render pending list
+    renderPendingComplaints(allPendingComplaints);
+
+    // --- Direct Rendering for Resolved ---
+    const resolvedList = document.getElementById('resolved-complaints-list');
+    resolvedList.innerHTML = ''; // Clear it first
     if (resolvedComplaints.length === 0) {
         resolvedList.innerHTML = '<p class="text-gray-500">No issues have been resolved yet.</p>';
     } else {
         resolvedComplaints.forEach(c => resolvedList.appendChild(createComplaintCard(c)));
     }
     
-    lucide.createIcons(); // Re-render icons
+    lucide.createIcons();
 }
 
-// NEW: Helper function to create a complaint card to avoid code duplication
+// Dedicated function to render the pending complaints list
+function renderPendingComplaints(complaintsToShow) {
+    const pendingList = document.getElementById('pending-complaints-list');
+    pendingList.innerHTML = '';
+
+    const searchTerm = document.getElementById('pending-search-input').value;
+
+    if (complaintsToShow.length === 0) {
+        if (searchTerm) {
+            pendingList.innerHTML = '<p class="text-gray-500">No pending issues match your search.</p>';
+        } else {
+            pendingList.innerHTML = '<p class="text-gray-500">No pending issues. Great job, community!</p>';
+        }
+    } else {
+        complaintsToShow.forEach(c => pendingList.appendChild(createComplaintCard(c)));
+    }
+}
+
 function createComplaintCard(complaint) {
     const card = document.createElement('div');
     const isResolved = complaint.status !== 'Pending';
@@ -146,7 +235,6 @@ function createComplaintCard(complaint) {
     return card;
 }
 
-
 async function fetchMostVoted() {
     const response = await fetch(`${API_URL}/complaints/most_voted`);
     const complaint = await response.json();
@@ -158,7 +246,6 @@ async function fetchMostVoted() {
     }
 }
 
-// MODIFIED: Upvote now sends the user ID in the request body
 async function handleUpvote(id) {
     if (!currentUser) return;
     
@@ -176,7 +263,6 @@ async function handleUpvote(id) {
     fetchAllData();
 }
 
-// MODIFIED: handleResolve now processes the new API response
 async function handleResolve(complaintId) {
     if (!currentUser || !currentUser.is_admin) return;
     const url = `${API_URL}/admin/complaint/${complaintId}/status?admin_id=${currentUser.id}&status=Resolved`;
@@ -189,7 +275,6 @@ async function handleResolve(complaintId) {
     }
 }
 
-// NEW: Function to handle the undo button click
 async function handleUndo() {
     if (!currentUser || !currentUser.is_admin) return;
     
@@ -211,7 +296,6 @@ async function handleUndo() {
         }
     }
 }
-
 
 async function handleComplaintSubmit(e) {
     e.preventDefault();
@@ -308,4 +392,21 @@ document.addEventListener('DOMContentLoaded', () => {
     updateUIforAuthState();
     fetchAllData();
     lucide.createIcons();
+
+    // Event Listener for the Pending Search Bar
+    document.getElementById('pending-search-input').addEventListener('input', (e) => {
+        const prefix = e.target.value;
+        if (!prefix) {
+            renderPendingComplaints(allPendingComplaints);
+            lucide.createIcons();
+            return;
+        }
+        const matchingLocations = pendingComplaintsTrie.findAllWithPrefix(prefix);
+        const locationSet = new Set(matchingLocations);
+        const filteredComplaints = allPendingComplaints.filter(c => 
+            locationSet.has(c.location)
+        );
+        renderPendingComplaints(filteredComplaints);
+        lucide.createIcons();
+    });
 });
