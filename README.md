@@ -125,4 +125,7 @@ The backend exposes the following RESTful API endpoints:
 
 ## 👨‍💻 Author
 
--   **[Your Name]** - [Your Roll Number/ID]
+-   **Saksham Singh** - 2024BCS0070
+    **Anmol Pipara** - 2024BCS0014
+    **Prince Kumar** - 2024BCS0074
+    **Daksh Singh** - 2024BCS0042
