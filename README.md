@@ -3,7 +3,6 @@
 CivicHub is a community-driven web application designed to empower citizens by providing a platform to report, vote on, and track local civic issues. It helps municipal authorities prioritize the most pressing concerns by using a voting system, and provides administrative tools for managing and clustering complaints based on geographical proximity.
 
 ![CivicHub Dashboard](dashboard_admin.png)
-> **Note**: Please replace this with a high-quality screenshot of your application's admin or user dashboard.
 
 ---
 
