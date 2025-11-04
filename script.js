@@ -402,7 +402,6 @@ function handleLogout() {
     fetchAllData(); 
 }
 
-// --- **THE FIX IS HERE** ---
 // This listener waits for the HTML to be fully loaded before running any script that interacts with it.
 document.addEventListener('DOMContentLoaded', () => {
     // --- Initial Load ---

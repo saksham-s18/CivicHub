@@ -26,7 +26,7 @@ def get_db():
     finally:
         db.close()
 
-# --- Geocoding and Distance Calculation Helpers (Unchanged) ---
+# --- Geocoding and Distance Calculation Helpers ---
 def get_coords_for_city(city: str) -> Optional[tuple]:
     try:
         url = f"https://geocoding-api.open-meteo.com/v1/search?name={city}&count=1"
@@ -53,7 +53,7 @@ def haversine_distance(lat1, lon1, lat2, lon2) -> float:
     
     return R * c
 
-# --- User Authentication (Unchanged) ---
+# --- User Authentication ---
 @app.post("/register", response_model=schemas.User, status_code=201)
 def register_user(user: schemas.UserCreate, db: Session = Depends(get_db)):
     if db.query(models.User).filter(models.User.username == user.username).first():
@@ -92,7 +92,7 @@ def submit_complaint(complaint: schemas.ComplaintCreate, db: Session = Depends(g
 def get_all_complaints(db: Session = Depends(get_db)):
     return db.query(models.Complaint).order_by(desc(models.Complaint.upvotes)).all()
 
-# --- Upvote and Most-Voted Endpoints (Unchanged) ---
+# --- Upvote and Most-Voted Endpoints ---
 @app.post("/complaint/{complaint_id}/upvote", response_model=schemas.Complaint)
 def upvote_complaint(complaint_id: uuid.UUID, vote_request: schemas.UpvoteRequest, db: Session = Depends(get_db)):
     complaint = db.query(models.Complaint).filter(models.Complaint.id == complaint_id).first()
@@ -110,7 +110,7 @@ def upvote_complaint(complaint_id: uuid.UUID, vote_request: schemas.UpvoteReques
 def get_most_voted_complaint(db: Session = Depends(get_db)):
     return db.query(models.Complaint).filter(models.Complaint.status == "Pending").order_by(desc(models.Complaint.upvotes)).first()
 
-# --- Admin Status Update and Undo (Unchanged) ---
+# --- Admin Status Update and Undo  ---
 @app.put("/admin/complaint/{complaint_id}/status", response_model=schemas.AdminActionResponse)
 def update_complaint_status_by_admin(complaint_id: uuid.UUID, admin_id: uuid.UUID, status: str, db: Session = Depends(get_db)):
     admin_user = db.query(models.User).filter(models.User.id == admin_id).first()
@@ -148,7 +148,7 @@ def undo_last_admin_action(request: schemas.UndoRequest, db: Session = Depends(g
     db.refresh(complaint)
     return {"updated_complaint": complaint, "actions_to_undo": len(admin_stack)}
 
-# --- **MODIFIED**: New Global Clustering Endpoint ---
+# --- New Global Clustering Endpoint ---
 @app.post("/admin/cluster-all", status_code=204)
 def create_all_clusters(request: schemas.ClusterRequest, db: Session = Depends(get_db)):
     """
@@ -200,7 +200,7 @@ def create_all_clusters(request: schemas.ClusterRequest, db: Session = Depends(g
     
     db.commit()
 
-# --- Get Clustered Complaints (Unchanged) ---
+# --- Get Clustered Complaints ---
 @app.get("/complaints/clustered", response_model=List[schemas.ClusteredComplaintResponse])
 def get_clustered_complaints(db: Session = Depends(get_db)):
     cluster_parents = db.query(models.Complaint).filter(
